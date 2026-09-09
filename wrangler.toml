@@ -1,0 +1,18 @@
+name = "mcl-skin-service"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+# No custom domain configured — Cloudflare serves this automatically at
+# https://mcl-skin-service.<your-workers-dev-subdomain>.workers.dev
+# Add a [[routes]] block here later if a real domain is bought.
+
+[[kv_namespaces]]
+binding = "SKIN_REGISTRY"
+id = "d2db339606bf42ba9198d09405d3649e"
+
+[[r2_buckets]]
+binding = "SKIN_BUCKET"
+bucket_name = "mcl-skins"
+
+# ADMIN_SECRET is not set here on purpose — secrets must never be committed.
+# Set it with: wrangler secret put ADMIN_SECRET

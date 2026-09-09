@@ -1,98 +1,102 @@
-# MCL Skin Service
+# mcl-skin-service
 
-Backend nhỏ chạy trên Cloudflare Workers, phục vụ việc đồng bộ skin cho MCLv2.
-Thay thế `CustomSkinAPI` (hiện đang trỏ vào ely.by) bằng dịch vụ do MCLv2 tự quản lý.
+The backend for [MCLv2](https://github.com/pecora31/MCLv2), running on Cloudflare Workers.
 
-Đã viết xong và test cục bộ (`npm test` — 7/7 pass, và test tay qua `wrangler dev`
-xác nhận đủ 8 kịch bản: claim, đọc công khai, chặn claim trùng, chặn token sai,
-chấp nhận token đúng, chặn file không phải PNG, chặn username sai định dạng).
-Phần còn lại dưới đây cần tài khoản Cloudflare của bạn, mình không làm thay được.
+It does three jobs the launcher cannot do from a player's machine:
 
-## 1. Tạo tài khoản và cài công cụ
+- **Skin sync.** Offline-mode players have no Mojang profile, so by default nobody on a
+  small server sees anyone else's skin. This stores skins by name and serves them to
+  CustomSkinLoader in every MCLv2 install.
+- **CurseForge proxy.** CurseForge's terms forbid disclosing an API key to third parties,
+  which an open-source launcher shipping one would do. The key lives here as a Worker
+  secret instead.
+- **Profile share codes.** A profile becomes a seven-character code that rebuilds it on
+  someone else's machine.
 
-```bash
-npm install -g wrangler
-wrangler login
-```
+## Endpoints
 
-Lệnh `wrangler login` sẽ mở trình duyệt để bạn đăng nhập/đăng ký Cloudflare
-(miễn phí). Khi đăng ký lần đầu, Cloudflare sẽ hỏi bạn chọn một **workers.dev
-subdomain** riêng — đây sẽ là phần đầu của mọi URL sau này, ví dụ nếu bạn chọn
-`pecora31` thì service này sẽ chạy ở:
+### Skins
 
-```
-https://mcl-skin-service.pecora31.workers.dev
-```
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/v1/skins/:username` | Claims a name. Answers with a token **once** — it is stored only as a hash and cannot be recovered. Five claims per address per day. |
+| `PUT` | `/v1/skins/:username` | Replaces the skin. Needs `Authorization: Bearer <token>`. |
+| `GET` | `/v1/skins/:username.png` | Public. Cached at the edge for thirty days, matching CustomSkinLoader's own cache. |
+| `DELETE` | `/v1/skins/:username` | Owner token, or `ADMIN_SECRET` for taking down a reported skin. |
 
-## 2. Tạo KV namespace và R2 bucket
+Uploads must be a real PNG of 64×64 or 64×32 under 100KB — checked by reading the IHDR
+header rather than trusting the file name.
 
-```bash
-cd mcl-skin-service
-wrangler kv namespace create SKIN_REGISTRY
-```
+### CurseForge
 
-Lệnh trên in ra một `id`, ví dụ:
-```
-{ binding = "SKIN_REGISTRY", id = "abcd1234..." }
-```
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/v1/curseforge/*` | Forwarded to `api.curseforge.com` with the key attached. |
 
-Mở `wrangler.toml`, thay dòng:
-```toml
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
-```
-bằng `id` thật vừa nhận được.
+Deliberately not a free CurseForge API for the internet: GET only, and only the four read
+endpoints the launcher actually calls (`/v1/mods/search`, `/v1/mods/{id}`,
+`/v1/mods/{id}/files`, `/v1/categories`). Upstream headers are stripped so no rate-limit
+state leaks, and successful answers are cached for fifteen minutes. Failures are not cached,
+so one rate-limited minute does not become a rate-limited quarter of an hour for everyone.
 
-Tiếp theo tạo R2 bucket:
-```bash
-wrangler r2 bucket create mcl-skins
-```
+### Share codes
 
-(Tên bucket đã khớp sẵn trong `wrangler.toml`, không cần sửa gì thêm.)
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/v1/shares` | Stores a profile manifest, answers with a code. Twenty per address per day. |
+| `GET` | `/v1/shares/:code` | Returns the manifest. Codes are case-insensitive and expire after sixty days. |
 
-## 3. Đặt secret cho quyền admin (dùng để gỡ skin vi phạm)
+Only the manifest is stored — which mod, from which platform, at which version — never the
+files. The importing launcher fetches those from Modrinth and CurseForge itself, so nothing
+is redistributed here and a share stays a couple of kilobytes.
 
-```bash
-wrangler secret put ADMIN_SECRET
-```
+Manifests are written by one player and read by another, so they are validated before being
+stored: known sources only, project ids must be plain ids rather than anything that could be
+echoed into an API path on someone else's machine, and both size and addon count are capped.
 
-Nhập một chuỗi bí mật dài, ngẫu nhiên (ví dụ tạo bằng `openssl rand -hex 32`).
-Giữ chuỗi này riêng cho bạn — đây là "chìa khoá vạn năng" để xoá bất kỳ skin
-nào khi có báo cáo vi phạm, không chia sẻ, không commit vào git.
+## Why the free tier shapes the design
 
-## 4. Deploy
+Workers allow 100k requests a day; KV allows 100k reads but only **1k writes**. Writes are
+the scarce half, which is why skin claims and share codes are rate limited per address, and
+why shares get their own KV namespace — a burst of share codes must not starve skin claims.
+R2 gives 10GB with free egress, and a skin is a few kilobytes.
 
-```bash
-npm run deploy
-```
-
-Sau khi chạy xong, wrangler in ra URL thật của service — dùng URL đó (dạng
-`https://mcl-skin-service.<subdomain>.workers.dev`) cho bước tiếp theo.
-
-## 5. Kiểm tra nhanh sau khi deploy
+## Running it
 
 ```bash
-curl -X POST --data-binary @duong-dan-toi-mot-file-skin.png \
-  https://mcl-skin-service.<subdomain>.workers.dev/v1/skins/TenThuNghiem
+npm install
+npm test          # unit tests; no network or Cloudflare account needed
+npm run typecheck
+npm run dev       # local worker on http://localhost:8787
 ```
 
-Phải nhận về JSON có `token` và `skinUrl`. Mở `skinUrl` trên trình duyệt phải
-thấy đúng ảnh vừa gửi lên.
+To deploy a copy of your own, you need a Cloudflare account — the free tier is enough:
 
-## Bước tiếp theo (chưa làm trong lần này)
+```bash
+npx wrangler login
+npx wrangler kv namespace create SKIN_REGISTRY
+npx wrangler kv namespace create SHARE_REGISTRY
+npx wrangler r2 bucket create mcl-skins
+```
 
-Sau khi bạn xác nhận deploy thành công và có URL thật, việc còn lại là nối vào
-MCLv2 (Giai đoạn 5 trong kế hoạch tổng thể): sửa `install_local_skin` phía Rust
-để tự động gọi API này, lưu token vào máy người dùng, và đổi `root` trong cấu
-hình CustomSkinLoader trỏ vào URL mới thay vì ely.by. Báo mình khi có URL để
-làm tiếp phần này.
+Put the two namespace ids into `wrangler.toml`, then set the secrets and deploy:
 
-## Giới hạn đã biết
+```bash
+npx wrangler secret put ADMIN_SECRET          # any long random string
+npx wrangler secret put CURSEFORGE_API_KEY    # from console.curseforge.com
+npx wrangler deploy
+```
 
-- `npm audit` báo lỗ hổng trong `sharp` (thư viện xử lý ảnh nội bộ của môi
-  trường giả lập `wrangler dev`) — chỉ ảnh hưởng công cụ phát triển cục bộ,
-  không có trong Worker thật được deploy, không xử lý input từ người dùng.
-  Không cần lo, chỉ cần biết nó ở đó.
-- Rate limit hiện đặt 5 lần claim mới/IP/ngày — chỉnh trong `RATE_LIMIT_CLAIMS_PER_DAY`
-  ở `src/index.ts` nếu cần khác.
-- Chưa có cơ chế khôi phục token khi mất máy — xem phần thảo luận trong kế
-  hoạch tổng thể, dự kiến làm khi MCLv2 có MS auth.
+Secrets are never committed. `wrangler secret put` stores them on Cloudflare and the Worker
+reads them from its environment.
+
+Finally, point the launcher at your deployment: `SKIN_SERVICE_ROOT` in
+`src-tauri/src/instance_manager.rs` and `MCL_SERVICE_ROOT` in `src/services/api.ts`.
+
+## Known gaps
+
+- **No way to recover a skin token.** It is stored only as a hash, so a player who
+  reinstalls on a new machine cannot reclaim their name. `ADMIN_SECRET` can delete the
+  record so they can claim it again.
+- `npm audit` reports a vulnerability in `sharp`, which belongs to the local `wrangler dev`
+  emulator. It is not part of the deployed Worker and never sees user input.

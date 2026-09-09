@@ -1,9 +1,11 @@
 import { generateToken, hashToken } from './crypto';
 import { handleCurseForge, isCurseForgeRequest } from './curseforge';
+import { handleShares, isShareRequest } from './shares';
 import { isValidUsername, validateSkinPng } from './validate';
 
 export interface Env {
   SKIN_REGISTRY: KVNamespace;
+  SHARE_REGISTRY: KVNamespace;
   SKIN_BUCKET: R2Bucket;
   // Set with: wrangler secret put ADMIN_SECRET
   ADMIN_SECRET?: string;
@@ -27,6 +29,10 @@ export default {
 
     if (isCurseForgeRequest(url.pathname)) {
       return handleCurseForge(request, env.CURSEFORGE_API_KEY);
+    }
+
+    if (isShareRequest(url.pathname)) {
+      return handleShares(request, env.SHARE_REGISTRY, url.pathname);
     }
 
     const match = url.pathname.match(/^\/v1\/skins\/([^/]+?)(\.png)?$/);

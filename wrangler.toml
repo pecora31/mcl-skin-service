@@ -10,6 +10,12 @@ compatibility_date = "2026-01-01"
 binding = "SKIN_REGISTRY"
 id = "d2db339606bf42ba9198d09405d3649e"
 
+# Separate from SKIN_REGISTRY on purpose: the free tier allows a thousand writes a day
+# across a namespace, and a burst of share codes must not starve skin claims.
+[[kv_namespaces]]
+binding = "SHARE_REGISTRY"
+id = "60f83b60a6d04df3b1be3ff159f641dd"
+
 [[r2_buckets]]
 binding = "SKIN_BUCKET"
 bucket_name = "mcl-skins"

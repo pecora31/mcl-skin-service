@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import worker, { type Env } from '../src/index';
+import { hashAddress } from '../src/crypto';
 
 const today = new Date().toISOString().slice(0, 10);
+const IP = '203.0.113.7';
 
 function limiter(success: boolean) {
   return { limit: async () => ({ success }) };
@@ -13,15 +15,28 @@ const throwingLimiter = {
   },
 };
 
-function env(overrides: Partial<Env> = {}, stored: Record<string, string> = {}): Env {
+/** `counters` holds R2 objects by key, the way the claim counters are stored. */
+function env(overrides: Partial<Env> = {}, counters: Record<string, string> = {}): Env {
   return {
-    SKIN_REGISTRY: { get: async (key: string) => stored[key] ?? null, put: async () => {} },
+    SKIN_REGISTRY: { get: async () => null, put: async () => {} },
+    SKIN_BUCKET: {
+      get: async (key: string) => (key in counters ? { text: async () => counters[key] } : null),
+      put: async () => {},
+    },
     ...overrides,
   } as unknown as Env;
 }
 
 function get(path: string) {
-  return new Request(`https://worker.example${path}`, { headers: { 'cf-connecting-ip': '203.0.113.7' } });
+  return new Request(`https://worker.example${path}`, { headers: { 'cf-connecting-ip': IP } });
+}
+
+function claim() {
+  return new Request('https://worker.example/v1/skins/Rong', {
+    method: 'POST',
+    headers: { 'cf-connecting-ip': IP },
+    body: new Uint8Array([0]),
+  });
 }
 
 describe('per-network request limits', () => {
@@ -54,18 +69,31 @@ describe('per-network request limits', () => {
     };
     await worker.fetch(get('/v1/skins/Rong'), env({ NAME_CHECK_LIMITER: recording }));
     expect(keys).toHaveLength(1);
-    expect(keys[0]).not.toContain('203.0.113.7');
+    expect(keys[0]).not.toContain(IP);
   });
 });
 
-describe('daily cap on new names', () => {
-  it('stops accepting claims once the day is full', async () => {
-    const request = new Request('https://worker.example/v1/skins/Rong', {
-      method: 'POST',
-      headers: { 'cf-connecting-ip': '203.0.113.7' },
-      body: new Uint8Array([0]),
-    });
-    const response = await worker.fetch(request, env({}, { [`claims:total:${today}`]: '150' }));
+describe('daily limits on new names', () => {
+  it('stops one network after fifty claims', async () => {
+    const address = await hashAddress(IP);
+    const response = await worker.fetch(claim(), env({}, { [`counters/claims/${today}/${address}`]: '50' }));
     expect(response.status).toBe(429);
+    expect(((await response.json()) as { error: string }).error).toMatch(/this network/);
+  });
+
+  it('stops everyone once five hundred names were taken today', async () => {
+    const response = await worker.fetch(claim(), env({}, { [`counters/claims-total/${today}`]: '500' }));
+    expect(response.status).toBe(429);
+    expect(((await response.json()) as { error: string }).error).toMatch(/for today/);
+  });
+
+  it('lets a claim through below both limits', async () => {
+    const address = await hashAddress(IP);
+    const response = await worker.fetch(
+      claim(),
+      env({}, { [`counters/claims/${today}/${address}`]: '49', [`counters/claims-total/${today}`]: '499' })
+    );
+    // Past both limits and on to checking the upload, which this one-byte body fails
+    expect(response.status).toBe(400);
   });
 });

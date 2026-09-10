@@ -29,14 +29,14 @@ interface SkinRecord {
   updatedAt: number;
 }
 
-const RATE_LIMIT_CLAIMS_PER_DAY = 5;
+const RATE_LIMIT_CLAIMS_PER_DAY = 50;
 
 /**
  * New names accepted per day across everyone. The free tier allows 1,000 KV writes a day for
- * the whole account and a claim costs three, so this keeps a flood of claims from a thousand
- * addresses from also blocking skin updates, deletes and share codes until midnight.
+ * the whole account and a claim costs one (its counters live in R2), so this keeps half of
+ * them for skin updates, deletes and share codes even during a flood of claims.
  */
-const MAX_NEW_CLAIMS_PER_DAY = 150;
+const MAX_NEW_CLAIMS_PER_DAY = 500;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -127,10 +127,10 @@ async function handleClaim(
   }
 
   const address = await clientAddress(request, env);
-  if (await isRateLimited(env, address)) {
+  if ((await readCounter(env, claimsFromKey(address))) >= RATE_LIMIT_CLAIMS_PER_DAY) {
     return json({ error: 'Too many new skins claimed from this network today. Try again tomorrow.' }, 429);
   }
-  if (await dailyClaimsFull(env)) {
+  if ((await readCounter(env, claimsTotalKey())) >= MAX_NEW_CLAIMS_PER_DAY) {
     return json({ error: 'The skin service has taken all the new names it can for today. Try again tomorrow.' }, 429);
   }
 
@@ -151,8 +151,8 @@ async function handleClaim(
     updatedAt: Date.now(),
   };
   await env.SKIN_REGISTRY.put(`skin:${username}`, JSON.stringify(record));
-  await bumpRateLimit(env, address);
-  await bumpDailyClaims(env);
+  await bumpCounter(env, claimsFromKey(address));
+  await bumpCounter(env, claimsTotalKey());
 
   return json(
     {
@@ -217,39 +217,32 @@ function clientAddress(request: Request, env: Env): Promise<string> {
   return hashAddress(request.headers.get('cf-connecting-ip') || 'unknown', env.ADMIN_SECRET);
 }
 
-async function isRateLimited(env: Env, address: string): Promise<boolean> {
-  const count = Number((await env.SKIN_REGISTRY.get(rateLimitKey(address))) || '0');
-  return count >= RATE_LIMIT_CLAIMS_PER_DAY;
+// Claim counters live in R2 rather than KV: its free tier allows a million writes a month
+// against KV's thousand a day, so counting claims no longer eats into the budget claims
+// themselves need. Keys carry the date, so a new day starts from zero, and a lifecycle rule
+// on the `counters/` prefix deletes old ones:
+//   wrangler r2 bucket lifecycle add mcl-skins expire-counters counters/ --expire-days 1
+
+function claimsFromKey(address: string): string {
+  return `claims/${today()}/${address}`;
 }
 
-async function bumpRateLimit(env: Env, address: string): Promise<void> {
-  const key = rateLimitKey(address);
-  const count = Number((await env.SKIN_REGISTRY.get(key)) || '0');
-  // TTL a little over 24h so a claim near midnight does not reset the counter early
-  await env.SKIN_REGISTRY.put(key, String(count + 1), { expirationTtl: 60 * 60 * 26 });
+function claimsTotalKey(): string {
+  return `claims-total/${today()}`;
 }
 
-function rateLimitKey(address: string): string {
-  return `ratelimit:${address}:${today()}`;
+async function readCounter(env: Env, key: string): Promise<number> {
+  const object = await env.SKIN_BUCKET.get(`counters/${key}`);
+  return object ? Number(await object.text()) || 0 : 0;
 }
 
-function dailyClaimsKey(): string {
-  return `claims:total:${today()}`;
-}
-
-async function dailyClaimsFull(env: Env): Promise<boolean> {
-  const count = Number((await env.SKIN_REGISTRY.get(dailyClaimsKey())) || '0');
-  return count >= MAX_NEW_CLAIMS_PER_DAY;
-}
-
-async function bumpDailyClaims(env: Env): Promise<void> {
-  const key = dailyClaimsKey();
+async function bumpCounter(env: Env, key: string): Promise<void> {
   try {
-    const count = Number((await env.SKIN_REGISTRY.get(key)) || '0');
-    await env.SKIN_REGISTRY.put(key, String(count + 1), { expirationTtl: 60 * 60 * 26 });
+    const count = await readCounter(env, key);
+    await env.SKIN_BUCKET.put(`counters/${key}`, String(count + 1));
   } catch {
-    // KV takes one write per second to a single key, so two claims landing together can
-    // fail this. The claim itself already succeeded; the cap just runs one short.
+    // Two claims landing together can race here. The claim itself already succeeded;
+    // the limit just runs one short, which is fine for a guard against floods.
   }
 }
 

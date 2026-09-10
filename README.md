@@ -19,7 +19,7 @@ It does three jobs the launcher cannot do from a player's machine:
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/v1/skins/:username` | Claims a name. Answers with a token **once** — it is stored only as a hash and cannot be recovered. Five claims per address per day. |
+| `POST` | `/v1/skins/:username` | Claims a name. Answers with a token **once** — it is stored only as a hash and cannot be recovered. Fifty claims per address and five hundred overall per day. |
 | `PUT` | `/v1/skins/:username` | Replaces the skin. Needs `Authorization: Bearer <token>`. |
 | `GET` | `/v1/skins/:username.png` | Public. Cached at the edge for thirty days, matching CustomSkinLoader's own cache. |
 | `DELETE` | `/v1/skins/:username` | Owner token, or `ADMIN_SECRET` for taking down a reported skin. |
@@ -63,7 +63,7 @@ This is everything the service keeps. The launcher side is described in
 |---|---|
 | Per claimed name: the name, a SHA-256 hash of its token, created/updated times, and the skin PNG | Until the owner deletes it |
 | Per share code: the profile manifest (never the mod files) | 60 days |
-| Per network: a count of claims and shares created today, keyed by a hash of the IP salted with `ADMIN_SECRET` — the raw address is never written anywhere | 26 hours |
+| Per network: a count of claims and shares created today, keyed by a hash of the IP salted with `ADMIN_SECRET` — the raw address is never written anywhere | 26 hours for share counts; claim counts are deleted by an R2 lifecycle rule within two days |
 | Successful CurseForge answers, with nothing identifying who asked | 15 minutes |
 
 ## Why the free tier shapes the design
@@ -71,9 +71,10 @@ This is everything the service keeps. The launcher side is described in
 Workers allow 100k requests a day; KV allows 100k reads but only **1k writes**, shared by
 the whole account. Writes are the scarce half, so:
 
-- Skin claims (5 a day) and share codes (20 a day) are limited per network.
-- New names are capped at 150 a day across everyone. A claim costs three writes, so this
-  leaves room for skin updates, deletes and share codes even during a flood of claims.
+- Skin claims (50 a day) and share codes (20 a day) are limited per network.
+- New names are capped at 500 a day across everyone. Claim counters live in R2, whose free
+  tier allows a million writes a month, so a claim costs one KV write and the cap keeps half
+  the daily budget for skin updates, deletes and share codes even during a flood of claims.
 - The name check and the CurseForge proxy are limited per network per minute (60 and 120)
   with Cloudflare's rate limiting binding, so a script can't burn the request budget or the
   CurseForge key's quota. These counts are per Cloudflare location and approximate by design.
@@ -95,6 +96,8 @@ npx wrangler login
 npx wrangler kv namespace create SKIN_REGISTRY
 npx wrangler kv namespace create SHARE_REGISTRY
 npx wrangler r2 bucket create mcl-skins
+# Deletes the daily claim counters once their day is over
+npx wrangler r2 bucket lifecycle add mcl-skins expire-counters counters/ --expire-days 1
 ```
 
 Put the two namespace ids into `wrangler.toml`, then set the secrets and deploy:

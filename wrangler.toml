@@ -10,11 +10,26 @@ compatibility_date = "2026-01-01"
 binding = "SKIN_REGISTRY"
 id = "d2db339606bf42ba9198d09405d3649e"
 
-# Separate from SKIN_REGISTRY on purpose: the free tier allows a thousand writes a day
-# across a namespace, and a burst of share codes must not starve skin claims.
+# Kept apart from SKIN_REGISTRY so shares and skins can be inspected and cleared on their
+# own. The free tier's thousand writes a day are shared by the whole account, which is what
+# the daily claim cap in src/index.ts protects.
 [[kv_namespaces]]
 binding = "SHARE_REGISTRY"
 id = "60f83b60a6d04df3b1be3ff159f641dd"
+
+# Per-network request limits for the two endpoints anyone can call as often as they like.
+# Counted per Cloudflare location and deliberately approximate — enough to stop a script
+# hammering the service, generous enough for a group of friends behind one home router.
+# The namespace ids only need to be unique within this Cloudflare account.
+[[ratelimits]]
+name = "CURSEFORGE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 120, period = 60 }
+
+[[ratelimits]]
+name = "NAME_CHECK_LIMITER"
+namespace_id = "1002"
+simple = { limit = 60, period = 60 }
 
 [[r2_buckets]]
 binding = "SKIN_BUCKET"

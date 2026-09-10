@@ -12,6 +12,13 @@ export interface Env {
   ADMIN_SECRET?: string;
   // Set with: wrangler secret put CURSEFORGE_API_KEY
   CURSEFORGE_API_KEY?: string;
+  // Declared in wrangler.toml
+  CURSEFORGE_LIMITER?: RateLimiter;
+  NAME_CHECK_LIMITER?: RateLimiter;
+}
+
+interface RateLimiter {
+  limit(options: { key: string }): Promise<{ success: boolean }>;
 }
 
 interface SkinRecord {
@@ -23,6 +30,13 @@ interface SkinRecord {
 }
 
 const RATE_LIMIT_CLAIMS_PER_DAY = 5;
+
+/**
+ * New names accepted per day across everyone. The free tier allows 1,000 KV writes a day for
+ * the whole account and a claim costs three, so this keeps a flood of claims from a thousand
+ * addresses from also blocking skin updates, deletes and share codes until midnight.
+ */
+const MAX_NEW_CLAIMS_PER_DAY = 150;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -39,6 +53,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     if (isCurseForgeRequest(url.pathname)) {
+      if (!(await withinLimit(env.CURSEFORGE_LIMITER, request, env))) return tooManyRequests();
       return handleCurseForge(request, env.CURSEFORGE_API_KEY);
     }
 
@@ -58,7 +73,10 @@ async function route(request: Request, env: Env): Promise<Response> {
     const username = displayName.toLowerCase();
 
     if (request.method === 'GET' && isImageRequest) return handleGet(env, username);
-    if (request.method === 'GET' && !isImageRequest) return handleCheck(env, displayName, username);
+    if (request.method === 'GET' && !isImageRequest) {
+      if (!(await withinLimit(env.NAME_CHECK_LIMITER, request, env))) return tooManyRequests();
+      return handleCheck(env, displayName, username);
+    }
     if (request.method === 'POST' && !isImageRequest) {
       return handleClaim(request, env, displayName, username);
     }
@@ -112,6 +130,9 @@ async function handleClaim(
   if (await isRateLimited(env, address)) {
     return json({ error: 'Too many new skins claimed from this network today. Try again tomorrow.' }, 429);
   }
+  if (await dailyClaimsFull(env)) {
+    return json({ error: 'The skin service has taken all the new names it can for today. Try again tomorrow.' }, 429);
+  }
 
   const bytes = new Uint8Array(await request.arrayBuffer());
   const validationError = validateSkinPng(bytes);
@@ -131,6 +152,7 @@ async function handleClaim(
   };
   await env.SKIN_REGISTRY.put(`skin:${username}`, JSON.stringify(record));
   await bumpRateLimit(env, address);
+  await bumpDailyClaims(env);
 
   return json(
     {
@@ -208,7 +230,51 @@ async function bumpRateLimit(env: Env, address: string): Promise<void> {
 }
 
 function rateLimitKey(address: string): string {
-  return `ratelimit:${address}:${new Date().toISOString().slice(0, 10)}`;
+  return `ratelimit:${address}:${today()}`;
+}
+
+function dailyClaimsKey(): string {
+  return `claims:total:${today()}`;
+}
+
+async function dailyClaimsFull(env: Env): Promise<boolean> {
+  const count = Number((await env.SKIN_REGISTRY.get(dailyClaimsKey())) || '0');
+  return count >= MAX_NEW_CLAIMS_PER_DAY;
+}
+
+async function bumpDailyClaims(env: Env): Promise<void> {
+  const key = dailyClaimsKey();
+  try {
+    const count = Number((await env.SKIN_REGISTRY.get(key)) || '0');
+    await env.SKIN_REGISTRY.put(key, String(count + 1), { expirationTtl: 60 * 60 * 26 });
+  } catch {
+    // KV takes one write per second to a single key, so two claims landing together can
+    // fail this. The claim itself already succeeded; the cap just runs one short.
+  }
+}
+
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Lets a request through unless its network is over the limiter's budget. Fails open: a
+ * limiter that is missing (local dev, tests) or erroring must not take the service down.
+ */
+async function withinLimit(limiter: RateLimiter | undefined, request: Request, env: Env): Promise<boolean> {
+  if (!limiter) return true;
+  try {
+    const { success } = await limiter.limit({ key: await clientAddress(request, env) });
+    return success;
+  } catch {
+    return true;
+  }
+}
+
+function tooManyRequests(): Response {
+  const response = json({ error: 'Too many requests from this network. Wait a minute and try again.' }, 429);
+  response.headers.set('Retry-After', '60');
+  return response;
 }
 
 function json(data: unknown, status = 200): Response {

@@ -68,9 +68,15 @@ This is everything the service keeps. The launcher side is described in
 
 ## Why the free tier shapes the design
 
-Workers allow 100k requests a day; KV allows 100k reads but only **1k writes**. Writes are
-the scarce half, which is why skin claims and share codes are rate limited per address, and
-why shares get their own KV namespace — a burst of share codes must not starve skin claims.
+Workers allow 100k requests a day; KV allows 100k reads but only **1k writes**, shared by
+the whole account. Writes are the scarce half, so:
+
+- Skin claims (5 a day) and share codes (20 a day) are limited per network.
+- New names are capped at 150 a day across everyone. A claim costs three writes, so this
+  leaves room for skin updates, deletes and share codes even during a flood of claims.
+- The name check and the CurseForge proxy are limited per network per minute (60 and 120)
+  with Cloudflare's rate limiting binding, so a script can't burn the request budget or the
+  CurseForge key's quota. These counts are per Cloudflare location and approximate by design.
 R2 gives 10GB with free egress, and a skin is a few kilobytes.
 
 ## Running it

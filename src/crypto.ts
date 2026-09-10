@@ -14,6 +14,13 @@ export async function hashToken(token: string): Promise<string> {
   return base64UrlEncode(new Uint8Array(digest));
 }
 
+// Rate limits count per network, but the address itself is never stored. It is mixed with a
+// server-side secret first, so the stored value can't be reversed by hashing every IPv4
+// address until one matches.
+export async function hashAddress(ip: string, secret = ''): Promise<string> {
+  return hashToken(`${secret}:${ip}`);
+}
+
 function base64UrlEncode(bytes: Uint8Array): string {
   let binary = '';
   for (const b of bytes) binary += String.fromCharCode(b);

@@ -123,13 +123,15 @@ export function validateManifest(value: unknown): { manifest: ShareManifest } | 
   };
 }
 
+/** `address` is the caller's network as a salted hash, used only to count shares per day. */
 export async function handleShares(
   request: Request,
   kv: KVNamespace,
-  pathname: string
+  pathname: string,
+  address: string
 ): Promise<Response> {
   if (request.method === 'POST' && pathname === '/v1/shares') {
-    return createShare(request, kv);
+    return createShare(request, kv, address);
   }
   if (request.method === 'GET' && pathname.startsWith('/v1/shares/')) {
     return readShare(kv, pathname.slice('/v1/shares/'.length));
@@ -137,9 +139,8 @@ export async function handleShares(
   return json({ error: 'Method not allowed' }, 405);
 }
 
-async function createShare(request: Request, kv: KVNamespace): Promise<Response> {
-  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
-  const limitKey = `sharelimit:${ip}:${new Date().toISOString().slice(0, 10)}`;
+async function createShare(request: Request, kv: KVNamespace, address: string): Promise<Response> {
+  const limitKey = `sharelimit:${address}:${new Date().toISOString().slice(0, 10)}`;
   const used = Number((await kv.get(limitKey)) || '0');
   if (used >= RATE_LIMIT_SHARES_PER_DAY) {
     return json({ error: 'Too many share codes created today. Try again tomorrow.' }, 429);

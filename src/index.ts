@@ -1,4 +1,4 @@
-import { generateToken, hashToken } from './crypto';
+import { generateToken, hashAddress, hashToken } from './crypto';
 import { handleCurseForge, isCurseForgeRequest } from './curseforge';
 import { handleShares, isShareRequest } from './shares';
 import { alternativeNames, isValidUsername, validateSkinPng } from './validate';
@@ -43,7 +43,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     }
 
     if (isShareRequest(url.pathname)) {
-      return handleShares(request, env.SHARE_REGISTRY, url.pathname);
+      return handleShares(request, env.SHARE_REGISTRY, url.pathname, await clientAddress(request, env));
     }
 
     const match = url.pathname.match(/^\/v1\/skins\/([^/]+?)(\.png)?$/);
@@ -108,8 +108,8 @@ async function handleClaim(
     return json({ error: 'Username already claimed. Use PUT with your token to update it.' }, 409);
   }
 
-  const clientIp = request.headers.get('cf-connecting-ip') || 'unknown';
-  if (await isRateLimited(env, clientIp)) {
+  const address = await clientAddress(request, env);
+  if (await isRateLimited(env, address)) {
     return json({ error: 'Too many new skins claimed from this network today. Try again tomorrow.' }, 429);
   }
 
@@ -130,7 +130,7 @@ async function handleClaim(
     updatedAt: Date.now(),
   };
   await env.SKIN_REGISTRY.put(`skin:${username}`, JSON.stringify(record));
-  await bumpRateLimit(env, clientIp);
+  await bumpRateLimit(env, address);
 
   return json(
     {
@@ -190,20 +190,25 @@ async function getRecord(env: Env, username: string): Promise<SkinRecord | null>
   return raw ? (JSON.parse(raw) as SkinRecord) : null;
 }
 
-async function isRateLimited(env: Env, ip: string): Promise<boolean> {
-  const count = Number((await env.SKIN_REGISTRY.get(rateLimitKey(ip))) || '0');
+/** The caller's network, as the salted hash rate limits are counted under — never the raw IP. */
+function clientAddress(request: Request, env: Env): Promise<string> {
+  return hashAddress(request.headers.get('cf-connecting-ip') || 'unknown', env.ADMIN_SECRET);
+}
+
+async function isRateLimited(env: Env, address: string): Promise<boolean> {
+  const count = Number((await env.SKIN_REGISTRY.get(rateLimitKey(address))) || '0');
   return count >= RATE_LIMIT_CLAIMS_PER_DAY;
 }
 
-async function bumpRateLimit(env: Env, ip: string): Promise<void> {
-  const key = rateLimitKey(ip);
+async function bumpRateLimit(env: Env, address: string): Promise<void> {
+  const key = rateLimitKey(address);
   const count = Number((await env.SKIN_REGISTRY.get(key)) || '0');
   // TTL a little over 24h so a claim near midnight does not reset the counter early
   await env.SKIN_REGISTRY.put(key, String(count + 1), { expirationTtl: 60 * 60 * 26 });
 }
 
-function rateLimitKey(ip: string): string {
-  return `ratelimit:${ip}:${new Date().toISOString().slice(0, 10)}`;
+function rateLimitKey(address: string): string {
+  return `ratelimit:${address}:${new Date().toISOString().slice(0, 10)}`;
 }
 
 function json(data: unknown, status = 200): Response {

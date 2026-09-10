@@ -1,6 +1,6 @@
 # mcl-skin-service
 
-The backend for [MCLv2](https://github.com/pecora31/MCLv2), running on Cloudflare Workers.
+The backend for [MCL Client](https://github.com/pecora31/MCL-Client), running on Cloudflare Workers.
 
 It does three jobs the launcher cannot do from a player's machine:
 
@@ -53,6 +53,18 @@ is redistributed here and a share stays a couple of kilobytes.
 Manifests are written by one player and read by another, so they are validated before being
 stored: known sources only, project ids must be plain ids rather than anything that could be
 echoed into an API path on someone else's machine, and both size and addon count are capped.
+
+## What is stored
+
+This is everything the service keeps. The launcher side is described in
+[MCL Client's PRIVACY.md](https://github.com/pecora31/MCL-Client/blob/main/PRIVACY.md).
+
+| Data | Kept for |
+|---|---|
+| Per claimed name: the name, a SHA-256 hash of its token, created/updated times, and the skin PNG | Until the owner deletes it |
+| Per share code: the profile manifest (never the mod files) | 60 days |
+| Per network: a count of claims and shares created today, keyed by a hash of the IP salted with `ADMIN_SECRET` — the raw address is never written anywhere | 26 hours |
+| Successful CurseForge answers, with nothing identifying who asked | 15 minutes |
 
 ## Why the free tier shapes the design
 

@@ -20,6 +20,9 @@ function post(body: unknown, ip = '1.2.3.4'): Request {
   });
 }
 
+// What index.ts passes in: the caller's network as a salted hash, never the raw IP
+const ADDRESS = 'hashed-address';
+
 const VALID = {
   name: 'Friends SMP',
   gameVersion: '1.21.1',
@@ -93,7 +96,7 @@ describe('handleShares', () => {
   });
 
   it('stores a manifest and hands back a code that reads it again', async () => {
-    const created = await handleShares(post(VALID), kv, '/v1/shares');
+    const created = await handleShares(post(VALID), kv, '/v1/shares', ADDRESS);
     expect(created.status).toBe(201);
     const { code } = (await created.json()) as { code: string };
     expect(_internals.isValidCode(code)).toBe(true);
@@ -101,7 +104,8 @@ describe('handleShares', () => {
     const read = await handleShares(
       new Request(`https://worker.example/v1/shares/${code}`),
       kv,
-      `/v1/shares/${code}`
+      `/v1/shares/${code}`,
+      ADDRESS
     );
     expect(read.status).toBe(200);
     const manifest = (await read.json()) as typeof VALID;
@@ -110,47 +114,48 @@ describe('handleShares', () => {
   });
 
   it('accepts a code typed in lower case', async () => {
-    const created = await handleShares(post(VALID), kv, '/v1/shares');
+    const created = await handleShares(post(VALID), kv, '/v1/shares', ADDRESS);
     const { code } = (await created.json()) as { code: string };
     const lower = code.toLowerCase();
     const read = await handleShares(
       new Request(`https://worker.example/v1/shares/${lower}`),
       kv,
-      `/v1/shares/${lower}`
+      `/v1/shares/${lower}`,
+      ADDRESS
     );
     expect(read.status).toBe(200);
   });
 
   it('gives a plain answer for a code that has expired or never existed', async () => {
     const path = '/v1/shares/ABC2345';
-    const res = await handleShares(new Request(`https://worker.example${path}`), kv, path);
+    const res = await handleShares(new Request(`https://worker.example${path}`), kv, path, ADDRESS);
     expect(res.status).toBe(404);
   });
 
   it('rejects a malformed code without touching storage', async () => {
     const path = '/v1/shares/oops';
-    const res = await handleShares(new Request(`https://worker.example${path}`), kv, path);
+    const res = await handleShares(new Request(`https://worker.example${path}`), kv, path, ADDRESS);
     expect(res.status).toBe(400);
     expect(kv.get).not.toHaveBeenCalled();
   });
 
   it('sets an expiry so abandoned shares do not accumulate', async () => {
-    await handleShares(post(VALID), kv, '/v1/shares');
+    await handleShares(post(VALID), kv, '/v1/shares', ADDRESS);
     const [, , options] = (kv.put as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(options.expirationTtl).toBeGreaterThan(0);
   });
 
   it('rate limits one address per day', async () => {
     for (let attempt = 0; attempt < 20; attempt++) {
-      const res = await handleShares(post(VALID), kv, '/v1/shares');
+      const res = await handleShares(post(VALID), kv, '/v1/shares', ADDRESS);
       expect(res.status).toBe(201);
     }
-    const blocked = await handleShares(post(VALID), kv, '/v1/shares');
+    const blocked = await handleShares(post(VALID), kv, '/v1/shares', ADDRESS);
     expect(blocked.status).toBe(429);
   });
 
   it('refuses a body that is not JSON rather than throwing', async () => {
-    const res = await handleShares(post('{not json'), kv, '/v1/shares');
+    const res = await handleShares(post('{not json'), kv, '/v1/shares', ADDRESS);
     expect(res.status).toBe(400);
   });
 });

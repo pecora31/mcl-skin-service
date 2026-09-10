@@ -1,7 +1,7 @@
 import { generateToken, hashToken } from './crypto';
 import { handleCurseForge, isCurseForgeRequest } from './curseforge';
 import { handleShares, isShareRequest } from './shares';
-import { isValidUsername, validateSkinPng } from './validate';
+import { alternativeNames, isValidUsername, validateSkinPng } from './validate';
 import { isPreflightRequest, preflightResponse, withCors } from './cors';
 
 export interface Env {
@@ -58,6 +58,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     const username = displayName.toLowerCase();
 
     if (request.method === 'GET' && isImageRequest) return handleGet(env, username);
+    if (request.method === 'GET' && !isImageRequest) return handleCheck(env, displayName, username);
     if (request.method === 'POST' && !isImageRequest) {
       return handleClaim(request, env, displayName, username);
     }
@@ -83,6 +84,18 @@ async function handleGet(env: Env, username: string): Promise<Response> {
       ETag: String(record.updatedAt),
     },
   });
+}
+
+// Lets the launcher warn a player while they are still choosing a name, instead of the
+// clash only surfacing as a rejected upload the next time they launch. Read-only, so it is
+// not counted against the claim rate limit.
+async function handleCheck(env: Env, displayName: string, username: string): Promise<Response> {
+  if (!(await getRecord(env, username))) return json({ claimed: false, suggestions: [] });
+
+  const candidates = alternativeNames(displayName);
+  const records = await Promise.all(candidates.map((name) => getRecord(env, name.toLowerCase())));
+  const suggestions = candidates.filter((_, i) => !records[i]).slice(0, 3);
+  return json({ claimed: true, suggestions });
 }
 
 async function handleClaim(

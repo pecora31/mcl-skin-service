@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { isValidUsername, validateSkinPng } from '../src/validate';
+import { alternativeNames, isValidUsername, validateSkinPng } from '../src/validate';
+
+describe('alternativeNames', () => {
+  it('offers the same name with a numeric suffix', () => {
+    expect(alternativeNames('Rong', 3)).toEqual(['Rong_2', 'Rong_3', 'Rong_4']);
+  });
+
+  it('trims long names so every candidate is still a valid username', () => {
+    for (const name of alternativeNames('a'.repeat(16), 12)) {
+      expect(isValidUsername(name)).toBe(true);
+    }
+  });
+});
 
 describe('isValidUsername', () => {
   it('accepts standard Minecraft usernames', () => {

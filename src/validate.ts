@@ -12,6 +12,19 @@ export function isValidUsername(name: string): boolean {
   return USERNAME_RE.test(name);
 }
 
+const MAX_USERNAME_LENGTH = 16;
+
+// Offered when a name is already claimed: the same name with a short numeric suffix, trimmed
+// so every candidate still fits Minecraft's length limit and stays a valid username.
+export function alternativeNames(name: string, count = 8): string[] {
+  const candidates: string[] = [];
+  for (let n = 2; candidates.length < count; n++) {
+    const suffix = `_${n}`;
+    candidates.push(name.slice(0, MAX_USERNAME_LENGTH - suffix.length) + suffix);
+  }
+  return candidates;
+}
+
 // Returns null when the file is a valid skin, or a human-readable reason otherwise.
 export function validateSkinPng(bytes: Uint8Array): string | null {
   if (bytes.byteLength === 0) return 'Empty file';

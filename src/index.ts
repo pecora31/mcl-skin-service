@@ -2,6 +2,7 @@ import { generateToken, hashToken } from './crypto';
 import { handleCurseForge, isCurseForgeRequest } from './curseforge';
 import { handleShares, isShareRequest } from './shares';
 import { isValidUsername, validateSkinPng } from './validate';
+import { isPreflightRequest, preflightResponse, withCors } from './cors';
 
 export interface Env {
   SKIN_REGISTRY: KVNamespace;
@@ -25,6 +26,16 @@ const RATE_LIMIT_CLAIMS_PER_DAY = 5;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // Answered before anything else: this is the request the browser sends to ask
+    // permission before the real one, and it carries none of the real request's own
+    // headers or body to route on.
+    if (isPreflightRequest(request)) return preflightResponse();
+
+    return withCors(await route(request, env));
+  },
+};
+
+async function route(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     if (isCurseForgeRequest(url.pathname)) {
@@ -54,8 +65,7 @@ export default {
     if (request.method === 'DELETE' && !isImageRequest) return handleDelete(request, env, username);
 
     return new Response('Method not allowed', { status: 405 });
-  },
-};
+}
 
 async function handleGet(env: Env, username: string): Promise<Response> {
   const record = await getRecord(env, username);
